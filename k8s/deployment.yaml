@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: aargh64
+  name: aargh64
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: aargh64
+  template:
+    metadata:
+      name: aargh64
+      labels:
+        app: aargh64
+    spec:
+      containers:
+      - name: main
+        image: aargh64:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8443
+          name: main
+          protocol: TCP
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: aargh64
+  name: aargh64
+  namespace: default
+spec:
+  ports:
+  - name: aargh64-main
+    port: 8443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    app: aargh64
+---

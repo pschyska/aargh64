@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: test
+  name: test
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: test
+  template:
+    metadata:
+      name: test
+      annotations:
+        aargh64: linux/amd64
+      labels:
+        app: test
+    spec:
+      containers:
+      - name: main
+        image: library/ubuntu:latest
+        command: ["sleep", "inf"]
+      restartPolicy: Always
