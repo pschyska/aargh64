@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: main
-        image: aargh64:latest
+        image: aargh64-debug:latest
         imagePullPolicy: Never
         ports:
         - containerPort: 8443

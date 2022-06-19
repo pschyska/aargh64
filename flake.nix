@@ -57,7 +57,7 @@
             runtimeInputs = [ pkgs.crate2nix pkgs.nix ];
             text = ''
               env -C "$PRJ_ROOT/rust" crate2nix generate
-              nix build "$PRJ_ROOT#aargh64-docker"
+              nix build "$PRJ_ROOT#aargh64-docker-debug"
             '';
           };
           ensure-kind = pkgs.writeShellApplication {
@@ -65,18 +65,19 @@
             runtimeInputs = [ build pkgs.kind pkgs.gnugrep ];
             text = ''
               if ! kind get clusters | grep -xsqF "aargh64"; then
-                kind create cluster --name aargh64 --config "$PRJ_ROOT"/k8s/cluster.yaml
+                kind create cluster --name aargh64
               fi
             '';
           };
           load = pkgs.writeShellApplication {
             name = "load";
-            runtimeInputs = [ build ensure-kind pkgs.docker pkgs.kind ];
+            runtimeInputs = [ ensure-kind pkgs.kind ];
             text = ''
               ensure-kind
-              build
-              docker image load -i "$PRJ_ROOT/result" 
-              kind load docker-image --name aargh64 aargh64
+              kind --name aargh64 load image-archive \
+                <(zcat \
+                  "$(nix build "$PRJ_ROOT"#aargh64-docker-debug \
+                    --no-link --print-out-paths)")
             '';
           };
           deploy = pkgs.writeShellApplication {
@@ -101,43 +102,44 @@
               stern -lapp=aargh64
             '';
           };
-          aargh64 = (import ./rust/Cargo.nix {
+          container = package:
+            let
+              entrypoint = pkgs.writeShellApplication {
+                name = "entrypoint.sh";
+                runtimeInputs = [ pkgs.coreutils ];
+                text = ''
+                  cp ${certs}/cert.crt /admission-controller-tls.crt
+                  cp ${certs}/key.key /admission-controller-tls.key
+                  install -D "${pkgs.cacert}"/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
+                  exec ${package}/bin/aargh64
+                '';
+              };
+            in pkgs.dockerTools.buildImage {
+              name = "${package.crateName}${if package.release then "" else "-debug"}";
+              tag = "latest";
+              contents = [ entrypoint ];
+              config = { Cmd = [ "${entrypoint}/bin/entrypoint.sh" ]; };
+            };
+        in rec {
+          packages.aargh64 =
+            (import ./rust/Cargo.nix { inherit pkgs; }).rootCrate.build;
+          defaultPackage = packages.aargh64;
+          packages.aargh64-debug = (import ./rust/Cargo.nix {
             inherit pkgs;
             release = false;
           }).rootCrate.build;
-          aargh64-release = (import ./rust/Cargo.nix { inherit pkgs; }).rootCrate.build;
-        in {
-          defaultPackage = aargh64;
-          packages.aargh64-release = aargh64-release;
-          packages.aargh64-docker = pkgs.dockerTools.buildImage {
-            name = "aargh64-debug";
-            tag = "latest";
-            runAsRoot = ''
-              cp ${certs}/cert.crt /admission-controller-tls.crt
-              cp ${certs}/key.key /admission-controller-tls.key
-              install -D "${pkgs.cacert}"/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
-            '';
-            config = { Cmd = [ "${aargh64}/bin/aargh64" ]; };
-          };
-          packages.aargh64-docker-release = pkgs.dockerTools.buildImage {
-            name = "aargh64";
-            tag = "latest";
-            runAsRoot = ''
-              cp ${certs}/cert.crt /admission-controller-tls.crt
-              cp ${certs}/key.key /admission-controller-tls.key
-              install -D "${pkgs.cacert}"/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
-            '';
-            config = { Cmd = [ "${aargh64-release}/bin/aargh64" ]; };
-          };
+          packages.aargh64-docker = container packages.aargh64;
+          packages.aargh64-docker-debug = container packages.aargh64-debug;
           devShell = pkgs.devshell.mkShell {
             imports = [ "${devshell}/extra/language/c.nix" ];
             motd = "";
             packages = with pkgs; [
+              kind
+              stern
               build
               ensure-kind
               load
               deploy
-              clang.bintools
               fup-repl
               pkgs.fenix.stable.toolchain
               crate2nix
