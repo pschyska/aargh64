@@ -101,11 +101,16 @@
               stern -lapp=aargh64
             '';
           };
-          aargh64 = (import ./rust/Cargo.nix { inherit pkgs; }).rootCrate.build;
+          aargh64 = (import ./rust/Cargo.nix {
+            inherit pkgs;
+            release = false;
+          }).rootCrate.build;
+          aargh64-release = (import ./rust/Cargo.nix { inherit pkgs; }).rootCrate.build;
         in {
           defaultPackage = aargh64;
+          packages.aargh64-release = aargh64-release;
           packages.aargh64-docker = pkgs.dockerTools.buildImage {
-            name = "aargh64";
+            name = "aargh64-debug";
             tag = "latest";
             runAsRoot = ''
               cp ${certs}/cert.crt /admission-controller-tls.crt
@@ -113,6 +118,16 @@
               install -D "${pkgs.cacert}"/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
             '';
             config = { Cmd = [ "${aargh64}/bin/aargh64" ]; };
+          };
+          packages.aargh64-docker-release = pkgs.dockerTools.buildImage {
+            name = "aargh64";
+            tag = "latest";
+            runAsRoot = ''
+              cp ${certs}/cert.crt /admission-controller-tls.crt
+              cp ${certs}/key.key /admission-controller-tls.key
+              install -D "${pkgs.cacert}"/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
+            '';
+            config = { Cmd = [ "${aargh64-release}/bin/aargh64" ]; };
           };
           devShell = pkgs.devshell.mkShell {
             imports = [ "${devshell}/extra/language/c.nix" ];
