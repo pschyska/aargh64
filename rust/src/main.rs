@@ -1,19 +1,27 @@
 use std::convert::Infallible;
 use std::error::Error;
+use std::process;
 
 use anyhow::anyhow;
-use json_patch::PatchOperation;
+use futures::future::join_all;
 use k8s_openapi::api::core::v1::Pod;
-use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
+use kube::{
+    core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview},
+    Resource, ResourceExt,
+};
 use oci_distribution::client::ClientConfig;
 use oci_distribution::manifest::OciManifest;
 use oci_distribution::Reference;
-use tokio::main;
+use tokio::{main, task::JoinError};
 use tracing::*;
 use warp::{reply, Filter, Reply};
 
 #[main]
 async fn main() {
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.unwrap();
+        process::exit(130);
+    });
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let routes = warp::path("mutate")
@@ -41,15 +49,24 @@ async fn mutate_handler(body: AdmissionReview<Pod>) -> Result<impl Reply, Infall
     };
 
     let mut res = AdmissionResponse::from(&req);
-    if let Some(obj) = req.object {
-        res = match mutate(res.clone(), &obj).await {
+    if let Some(pod) = req.object {
+        res = match mutate(res.clone(), &pod).await {
             Ok(res) => {
-                info!("accepted: {:?}", req.operation);
+                info!(
+                    "Patching Pod(name={:?}, generate_name={:?})",
+                    pod.meta().name,
+                    pod.meta().generate_name
+                );
                 res
             }
             Err(err) => {
-                warn!("denied: {:?}: {}", req.operation, err);
-                res.deny(err.to_string())
+                info!(
+                    "Unable to patch Pod(name={:?}, generate_name={:?}), skipping: {}",
+                    pod.meta().name,
+                    pod.meta().generate_name,
+                    err
+                );
+                res
             }
         };
     };
@@ -67,52 +84,58 @@ async fn get_manifest(reference: Reference) -> anyhow::Result<OciManifest> {
     Ok(manifest)
 }
 
-async fn mutate(res: AdmissionResponse, obj: &Pod) -> Result<AdmissionResponse, Box<dyn Error>> {
-    let mut patches: Vec<PatchOperation> = vec![];
-    if let Some(annotations) = &obj.metadata.annotations {
-        if let Some(aargh_spec) = annotations.get("aargh64") {
-            if let Some((spec_os, spec_architecture)) = aargh_spec.split_once('/') {
-                if let Some(spec) = &obj.spec {
-                    for (i, container) in spec.containers.iter().enumerate() {
-                        if let Some(image) = &container.image {
-                            let reference: Reference = image.parse()?;
-                            let manifest = match get_manifest(reference.clone()).await? {
-                                OciManifest::Image(_) => Err(anyhow!("Not an image index")),
-                                OciManifest::ImageIndex(m) => Ok(m),
-                            }?;
-                            if let Some(matched_image) = manifest.manifests.iter().find(|m| {
-                                let platform = m.platform.as_ref().expect("No platform");
-                                debug!(
-                                    "digest: {} platform: {}/{} request {}/{}",
-                                    m.digest,
-                                    platform.os,
-                                    platform.architecture,
-                                    spec_os,
-                                    spec_architecture
-                                );
-                                platform.os == spec_os && platform.architecture == spec_architecture
-                            }) {
-                                patches.push(json_patch::PatchOperation::Replace(
-                                    json_patch::ReplaceOperation {
-                                        path: format!("/spec/containers/{}/image", i),
-                                        value: serde_json::Value::String(format!(
-                                            "{}/{}@{}",
-                                            reference.registry(),
-                                            reference.repository(),
-                                            matched_image.digest
-                                        )),
-                                    },
-                                ));
-                            }
-                        }
-                    }
+async fn mutate(res: AdmissionResponse, pod: &Pod) -> Result<AdmissionResponse, Box<dyn Error>> {
+    let patches: Vec<_> = pod
+        .spec
+        .as_ref()
+        .ok_or(anyhow!("No pod spec found"))?
+        .containers
+        .iter()
+        .enumerate()
+        .map(|(i, container)| {
+            let image = container.image.clone();
+            let aargh_spec = pod.annotations()["aargh64"].clone();
+            tokio::spawn(async move {
+                let (spec_os, spec_architecture) = aargh_spec
+                    .split_once("/")
+                    .ok_or(anyhow!("No valid aargh64 annotation found"))?;
+                let reference: Reference = image.ok_or(anyhow!("No container image"))?.parse()?;
+                let manifest = match get_manifest(reference.clone()).await? {
+                    OciManifest::Image(_) => Err(anyhow!("Not an image index")),
+                    OciManifest::ImageIndex(m) => Ok(m),
+                }?;
+
+                if let Some(matched_image) = manifest.manifests.iter().find(|m| {
+                    let platform = m.platform.as_ref().expect("No platform");
+                    debug!(
+                        "digest: {} platform: {}/{} request {}/{}",
+                        m.digest, platform.os, platform.architecture, spec_os, spec_architecture
+                    );
+                    platform.os == spec_os && platform.architecture == spec_architecture
+                }) {
+                    Ok(json_patch::PatchOperation::Replace(
+                        json_patch::ReplaceOperation {
+                            path: format!("/spec/containers/{}/image", i),
+                            value: serde_json::Value::String(format!(
+                                "{}/{}@{}",
+                                reference.registry(),
+                                reference.repository(),
+                                matched_image.digest
+                            )),
+                        },
+                    ))
+                } else {
+                    Err(anyhow!("Could not find a matching platform"))
                 }
-            }
-        }
-    }
-    for patch in &patches {
-        debug!("{:?}", patch);
-    }
+            })
+        })
+        .collect();
+    let patches = join_all(patches)
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, JoinError>>()?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(res.with_patch(json_patch::Patch(patches))?)
 }
