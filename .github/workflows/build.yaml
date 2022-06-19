@@ -7,10 +7,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2.4.0
-    - uses: actions/cache@v3
-      with:
-        path: /nix/store
-        key: nix-store-${{ runner.os }}-${{ runner.arch }}
     - uses: cachix/install-nix-action@v15
       with:
         extra_nix_config: |
