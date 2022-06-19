@@ -2,6 +2,7 @@ use std::convert::Infallible;
 use std::error::Error;
 
 use anyhow::anyhow;
+use json_patch::PatchOperation;
 use k8s_openapi::api::core::v1::Pod;
 use kube::core::admission::{AdmissionRequest, AdmissionResponse, AdmissionReview};
 use oci_distribution::client::ClientConfig;
@@ -13,7 +14,7 @@ use warp::{reply, Filter, Reply};
 
 #[main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let routes = warp::path("mutate")
         .and(warp::body::json())
@@ -55,9 +56,7 @@ async fn mutate_handler(body: AdmissionReview<Pod>) -> Result<impl Reply, Infall
     Ok(reply::json(&res.into_review()))
 }
 
-async fn get_manifest(image: &str) -> anyhow::Result<OciManifest> {
-    let reference: Reference = image.parse()?;
-
+async fn get_manifest(reference: Reference) -> anyhow::Result<OciManifest> {
     let mut client = oci_distribution::Client::new(ClientConfig::default());
     let (manifest, _) = client
         .pull_manifest(
@@ -69,32 +68,51 @@ async fn get_manifest(image: &str) -> anyhow::Result<OciManifest> {
 }
 
 async fn mutate(res: AdmissionResponse, obj: &Pod) -> Result<AdmissionResponse, Box<dyn Error>> {
+    let mut patches: Vec<PatchOperation> = vec![];
     if let Some(annotations) = &obj.metadata.annotations {
-        if let Some(_arch) = annotations.get("aargh64") {
-            if let Some(spec) = &obj.spec {
-                for container in &spec.containers {
-                    if let Some(image) = &container.image {
-                        let manifest = match get_manifest(image).await? {
-                            OciManifest::Image(_) => Err(anyhow!("Not an image index")),
-                            OciManifest::ImageIndex(m) => Ok(m),
-                        }?;
-                        for m in manifest.manifests {
-                            let platform = m.platform.ok_or_else(|| anyhow!("No platform"))?;
-                            println!("{}", platform);
+        if let Some(aargh_spec) = annotations.get("aargh64") {
+            if let Some((spec_os, spec_architecture)) = aargh_spec.split_once('/') {
+                if let Some(spec) = &obj.spec {
+                    for (i, container) in spec.containers.iter().enumerate() {
+                        if let Some(image) = &container.image {
+                            let reference: Reference = image.parse()?;
+                            let manifest = match get_manifest(reference.clone()).await? {
+                                OciManifest::Image(_) => Err(anyhow!("Not an image index")),
+                                OciManifest::ImageIndex(m) => Ok(m),
+                            }?;
+                            if let Some(matched_image) = manifest.manifests.iter().find(|m| {
+                                let platform = m.platform.as_ref().expect("No platform");
+                                debug!(
+                                    "digest: {} platform: {}/{} request {}/{}",
+                                    m.digest,
+                                    platform.os,
+                                    platform.architecture,
+                                    spec_os,
+                                    spec_architecture
+                                );
+                                platform.os == spec_os && platform.architecture == spec_architecture
+                            }) {
+                                patches.push(json_patch::PatchOperation::Replace(
+                                    json_patch::ReplaceOperation {
+                                        path: format!("/spec/containers/{}/image", i),
+                                        value: serde_json::Value::String(format!(
+                                            "{}/{}@{}",
+                                            reference.registry(),
+                                            reference.repository(),
+                                            matched_image.digest
+                                        )),
+                                    },
+                                ));
+                            }
                         }
-
-                        let patch =
-                            json_patch::PatchOperation::Replace(json_patch::ReplaceOperation {
-                                path: "/spec/containers[0].image".into(),
-                                value: serde_json::Value::String(image.into()),
-                            });
-
-                        return Ok(res.with_patch(json_patch::Patch(vec![patch]))?);
                     }
                 }
             }
         }
     }
+    for patch in &patches {
+        debug!("{:?}", patch);
+    }
 
-    Ok(res)
+    Ok(res.with_patch(json_patch::Patch(patches))?)
 }
