@@ -14,5 +14,5 @@ jobs:
     - uses: cachix/install-nix-action@v15
       with:
         extra_nix_config: |
-          access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+          system-features = nixos-test benchmark big-parallel kvm
     - run: nix build .#aargh64-docker
