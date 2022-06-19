@@ -81,7 +81,8 @@
           };
           deploy = pkgs.writeShellApplication {
             name = "deploy";
-            runtimeInputs = [ certs ensure-kind load pkgs.kubectl pkgs.openssl ];
+            runtimeInputs =
+              [ certs ensure-kind load pkgs.kubectl pkgs.openssl pkgs.stern ];
             text = ''
               load
               kubectl delete mutatingwebhookconfiguration aargh64 &>/dev/null || :
@@ -95,8 +96,9 @@
                 kubectl apply -f -
 
               kubectl apply -f "$PRJ_ROOT"/k8s/test.yaml
+              kubectl rollout restart deployment test
               kubectl rollout status deployment test
-              kubectl logs -f -lapp=aargh64
+              stern -lapp=aargh64
             '';
           };
           aargh64 = (import ./rust/Cargo.nix { inherit pkgs; }).rootCrate.build;
