@@ -94,8 +94,12 @@ async fn mutate(res: AdmissionResponse, pod: &Pod) -> Result<AdmissionResponse, 
         .enumerate()
         .map(|(i, container)| {
             let image = container.image.clone();
-            let aargh_spec = pod.annotations()["aargh64"].clone();
+            let annotations = pod.annotations().clone();
             tokio::spawn(async move {
+                let aargh_spec = annotations
+                    .get("aargh64")
+                    .ok_or(anyhow!("No aargh64 annotation found"))?
+                    .clone();
                 let (spec_os, spec_architecture) = aargh_spec
                     .split_once("/")
                     .ok_or(anyhow!("No valid aargh64 annotation found"))?;
@@ -130,6 +134,7 @@ async fn mutate(res: AdmissionResponse, pod: &Pod) -> Result<AdmissionResponse, 
             })
         })
         .collect();
+
     let patches = join_all(patches)
         .await
         .into_iter()
