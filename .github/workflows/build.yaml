@@ -16,4 +16,6 @@ jobs:
       with:
         name: pschyska
         authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-    - run: nix build .#aargh64-docker
+    - run: nix build .#aargh64-docker --out-link ./result && docker image load -i ./result
+    - run: docker image tag aargh64:latest ghcr.io/pschyska/aargh64:latest
+    - run: docker push ghcr.io/pschyska/aargh64:latest
