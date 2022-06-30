@@ -2,26 +2,36 @@
 name = "aargh64"
 version = "0.1.0"
 edition = "2021"
+default-run = "aargh64"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "aargh64"
+path = "src/main.rs"
+
+[[bin]]
+name = "crdgen"
+path = "src/crdgen.rs"
 
 [dependencies]
-anyhow = "1.0.57"
-# async-std = { version = "1.11.0", features = ["attributes"] }
+anyhow = "1.0.58"
 futures = "0.3.21"
-json-patch = "0.2.6"
+tokio = { version = "1.19.2", features = ["rt", "rt-multi-thread", "macros"] }
 k8s-openapi = { version = "0.15.0", features = ["v1_24"] }
-kube = { version = "0.73.0", features = ["runtime", "derive", "ws", "admission"] }
-serde_json = "1.0.81"
+kube = { version = "0.73.1", default-features = false, features = [
+  "client",
+  "rustls-tls",
+  "admission",
+  "derive",
+] }
+schemars = "0.8.10"
+warp = { version = "0.3.2", default-features = false, features = ["tls"] }
+tracing = "0.1.35"
+tracing-subscriber = "0.3.11"
 serde = { version = "1.0.137", features = ["derive"] }
+serde_json = "1.0.81"
 serde_yaml = "0.8.24"
-# tide = "0.16.0"
-# tide-rustls = "0.3.0"
-tracing = "0.1.29"
-tracing-subscriber = "0.3.3"
-tokio = { version = "1.14.0", features = ["rt-multi-thread", "rt", "macros"] }
-# hyper = { version = "0.14.13", features = ["client", "http1", "stream", "tcp"] }
-hyper = "0.14.13"
-hyper-tls = "0.5.0"
-warp = { version = "0.3", default-features = false, features = ["tls"] }
-oci-distribution = { version = "0.9.2", default-features = false, features = ["rustls-tls"] }
+json-patch = "0.2.6"
+oci-distribution = { version = "0.9.2", default-features = false, features = [
+  "rustls-tls",
+] }
+lazy_static = "1.4.0"

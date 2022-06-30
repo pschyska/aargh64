@@ -2,8 +2,6 @@
   description = "aargh64";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs";
-
     fup.url = "github:gytis-ivaskevicius/flake-utils-plus";
 
     devshell.url = "github:numtide/devshell";
@@ -12,22 +10,18 @@
 
     fenix.url = "github:nix-community/fenix";
     fenix.inputs.nixpkgs.follows = "nixpkgs";
+
+    crate2nix.url = "github:kolloch/crate2nix";
+    crate2nix.flake = false;
   };
 
-  outputs = inputs@{ self, nixpkgs, fup, devshell, fenix, ... }:
+  outputs = inputs@{ self, nixpkgs, fup, devshell, fenix, crate2nix, ... }:
     fup.lib.mkFlake {
       inherit self inputs;
       supportedSystems = [ "x86_64-linux" ];
 
-      sharedOverlays = [
-        devshell.overlay
-        fenix.overlay
-        (final: prev: {
+      sharedOverlays = [ devshell.overlay fenix.overlay ];
 
-          rustPlatform =
-            prev.makeRustPlatform { inherit (prev.fenix.stable) cargo rustc; };
-        })
-      ];
       outputsBuilder = channels:
         let
           pkgs = channels.nixpkgs;
@@ -56,7 +50,6 @@
             name = "build";
             runtimeInputs = [ pkgs.crate2nix pkgs.nix ];
             text = ''
-              env -C "$PRJ_ROOT/rust" crate2nix generate
               nix build "$PRJ_ROOT#aargh64-docker-debug"
             '';
           };
@@ -74,32 +67,11 @@
             runtimeInputs = [ ensure-kind pkgs.kind ];
             text = ''
               ensure-kind
+
               kind --name aargh64 load image-archive \
                 <(zcat \
                   "$(nix build "$PRJ_ROOT"#aargh64-docker-debug \
                     --no-link --print-out-paths)")
-            '';
-          };
-          deploy = pkgs.writeShellApplication {
-            name = "deploy";
-            runtimeInputs =
-              [ certs ensure-kind load pkgs.kubectl pkgs.openssl pkgs.stern ];
-            text = ''
-              load
-              kubectl delete mutatingwebhookconfiguration aargh64 &>/dev/null || :
-              kubectl delete deployment aargh64 &>/dev/null || :
-
-              kubectl apply -f "$PRJ_ROOT"/k8s/deployment.yaml
-              kubectl rollout status deployment aargh64
-
-              CA_PEM64="$(openssl base64 -A <"${certs}"/ca.crt)"
-              sed -e s,@CA_PEM_B64@,"$CA_PEM64",g <"$PRJ_ROOT"/k8s/admission_controller.yaml.tpl |
-                kubectl apply -f -
-
-              kubectl apply -f "$PRJ_ROOT"/k8s/test.yaml
-              kubectl rollout restart deployment test
-              kubectl rollout status deployment test
-              stern -lapp=aargh64
             '';
           };
           container = package:
@@ -108,8 +80,6 @@
                 name = "entrypoint.sh";
                 runtimeInputs = [ pkgs.coreutils ];
                 text = ''
-                  cp ${certs}/cert.crt /admission-controller-tls.crt
-                  cp ${certs}/key.key /admission-controller-tls.key
                   install -D "${pkgs.cacert}"/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
                   exec ${package}/bin/aargh64
                 '';
@@ -120,32 +90,70 @@
               contents = [ entrypoint ];
               config = { Cmd = [ "${entrypoint}/bin/entrypoint.sh" ]; };
             };
+          crate2nix-tools = import "${crate2nix}/tools.nix" { inherit pkgs; };
+          cargonix = pkgs.callPackage (crate2nix-tools.generatedCargoNix {
+            name = "aargh64";
+            src = ./rust;
+          });
+          c2nBuild = release:
+            (cargonix {
+              inherit release;
+              buildRustCrateForPkgs = pkgs:
+                (pkgs.buildRustCrate.override {
+                  inherit (fenix.packages.${pkgs.system}.minimal) cargo rustc;
+                });
+            }).rootCrate.build;
+            aargh64 = c2nBuild true;
+            aargh64-debug = c2nBuild false;
+          deploy = pkgs.writeShellApplication {
+            name = "deploy";
+            runtimeInputs =
+              [ certs ensure-kind load pkgs.kubectl pkgs.openssl pkgs.stern ];
+            text = ''
+              load
+              kubectl delete secret admission-controller-tls || :
+              kubectl create secret tls admission-controller-tls \
+                  --cert "${certs}/cert.crt" \
+                  --key "${certs}/key.key"
+              kubectl delete --now mutatingwebhookconfiguration aargh64 &>/dev/null || :
+              kubectl apply -f "$PRJ_ROOT"/k8s/deployment.yaml
+              kubectl apply -f <("${aargh64-debug}/bin/crdgen")
+              kubectl apply -f "$PRJ_ROOT"/k8s/po.yaml
+              kubectl rollout restart deployment aargh64
+              kubectl rollout status deployment aargh64
+
+              CA_PEM64="$(openssl base64 -A <"${certs}"/ca.crt)"
+              sed -e s,@CA_PEM_B64@,"$CA_PEM64",g <"$PRJ_ROOT"/k8s/admission_controller.yaml.tpl |
+                kubectl apply -f -
+
+              kubectl apply -f "$PRJ_ROOT"/k8s/test.yaml
+              kubectl rollout restart deployment test-with-annotation
+              kubectl rollout status deployment test-with-annotation
+              kubectl rollout restart deployment test
+              kubectl rollout status deployment test
+              stern -lapp=aargh64
+            '';
+          };
         in rec {
-          packages.aargh64 =
-            (import ./rust/Cargo.nix { inherit pkgs; }).rootCrate.build;
-          defaultPackage = packages.aargh64;
-          packages.aargh64-debug = (import ./rust/Cargo.nix {
-            inherit pkgs;
-            release = false;
-          }).rootCrate.build;
+          packages.aargh64 = c2nBuild true;
+          packages.aargh64-debug = c2nBuild false;
           packages.aargh64-docker = container packages.aargh64;
           packages.aargh64-docker-debug = container packages.aargh64-debug;
+          defaultPackage = packages.aargh64;
           devShell = pkgs.devshell.mkShell {
-            imports = [ "${devshell}/extra/language/c.nix" ];
             motd = "";
             packages = with pkgs; [
+              nix
+              bintools
               kind
               stern
+              fup-repl
+              crate2nix
               build
               ensure-kind
               load
               deploy
-              fup-repl
-              pkgs.fenix.stable.toolchain
-              crate2nix
             ];
-
-            language.c.includes = [ pkgs.openssl ];
           };
         };
     };

@@ -1,0 +1,7 @@
+---
+apiVersion: aargh64.akquinet.de/v1
+kind: PlatformOverride
+metadata:
+  name: amd64
+spec:
+  platform: linux/amd64

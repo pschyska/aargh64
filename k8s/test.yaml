@@ -1,3 +1,32 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: test-with-annotation
+  name: test-with-annotation
+  namespace: default
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: test-with-annotation
+  template:
+    metadata:
+      name: test-with-annotation
+      annotations:
+        aargh64: linux/amd64
+      labels:
+        app: test-with-annotation
+    spec:
+      terminationGracePeriodSeconds: 0
+      containers:
+      - name: main
+        image: library/ubuntu:latest
+        command: ["sleep", "inf"]
+      restartPolicy: Always
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,17 +35,18 @@ metadata:
   name: test
   namespace: default
 spec:
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: test
   template:
     metadata:
       name: test
-      annotations:
-        aargh64: linux/amd64
       labels:
         app: test
     spec:
+      terminationGracePeriodSeconds: 0
       containers:
       - name: main
         image: library/ubuntu:latest

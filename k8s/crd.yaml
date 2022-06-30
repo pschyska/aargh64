@@ -1,0 +1,38 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: platformoverrides.akquinet.de
+spec:
+  group: akquinet.de
+  names:
+    categories: []
+    kind: PlatformOverride
+    plural: platformoverrides
+    shortNames: []
+    singular: platformoverride
+  scope: Namespaced
+  versions:
+    - additionalPrinterColumns:
+        - description: Platform to override all matching containers to.
+          jsonPath: ".spec.platform"
+          name: ""
+          type: string
+      name: v1
+      schema:
+        openAPIV3Schema:
+          properties:
+            spec:
+              properties:
+                platform:
+                  type: string
+              required:
+                - platform
+              type: object
+          required:
+            - spec
+          title: PlatformOverrideCrd
+          type: object
+      served: true
+      storage: true
+      subresources: {}
